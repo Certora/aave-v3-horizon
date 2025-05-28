@@ -49,7 +49,7 @@ hook Sstore _userState[KEY address a].balance uint128 balance (uint128 old_balan
 
 invariant totalSupplyEqualsSumAllBalance(env e)
   totalSupply(e) == scaledBalanceOfToBalanceOf(require_uint256(sumAllBalance()))
-  filtered { f -> !f.isView }
+  filtered { f -> !f.isView && !disallowedMethods(f) }
   {
     preserved mint(address caller, address onBehalfOf, uint256 amount, uint256 index) with (env e2) {
       require index == gRNI();
@@ -309,7 +309,8 @@ definition disallowedMethods(method f) returns bool =
     f.selector == sig:transfer(address,uint256).selector || 
     f.selector == sig:transferFrom(address,address,uint256).selector || 
     f.selector == sig:transferOnLiquidation(address,address,uint256).selector || 
-    f.selector == sig:transferUnderlyingTo(address,uint256).selector;
+    f.selector == sig:transferUnderlyingTo(address,uint256).selector ||
+    f.selector == sig:mintToTreasury(uint256, uint256).selector;
 
 rule revertOnDisallowedMethods(method f)
   filtered { f -> f.contract == currentContract && disallowedMethods(f) }
