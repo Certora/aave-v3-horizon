@@ -49,7 +49,7 @@ hook Sstore _userState[KEY address a].balance uint128 balance (uint128 old_balan
 
 invariant totalSupplyEqualsSumAllBalance(env e)
   totalSupply(e) == scaledBalanceOfToBalanceOf(require_uint256(sumAllBalance()))
-  filtered { f -> !f.isView }
+  filtered { f -> !f.isView && !disallowedMethods(f) }
   {
     preserved mint(address caller, address onBehalfOf, uint256 amount, uint256 index) with (env e2) {
       require index == gRNI();
@@ -58,15 +58,6 @@ invariant totalSupplyEqualsSumAllBalance(env e)
       require index == gRNI();
     }
   }
-
-// Rule to verify that permit sets the allowance correctly.
-rule permitIntegrity(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) {
-  env e;
-  uint256 nonceBefore = nonces(owner);
-  permit(e, owner, spender, value, deadline, v, r, s);
-  assert allowance(owner, spender) == value;
-  assert to_mathint(nonces(owner)) == nonceBefore + 1;
-}
 
 // can't mint zero Tokens
 rule mintArgsPositive(address user, uint256 amount, uint256 index) {
@@ -89,13 +80,14 @@ rule balanceOfChange(address a, address b, address c, method f )
   uint256 balanceCBefore = balanceOf(c);
 
   calldataarg arg;
-  f(e, arg);
+  f@withrevert(e, arg);
+  bool functionReverted = lastReverted;
 
   uint256 balanceAAfter = balanceOf(a);
   uint256 balanceBAfter = balanceOf(b);
   uint256 balanceCAfter = balanceOf(c);
 
-  assert ( balanceABefore == balanceAAfter || balanceBBefore == balanceBAfter || balanceCBefore == balanceCAfter);
+  assert (functionReverted || balanceABefore == balanceAAfter || balanceBBefore == balanceBAfter || balanceCBefore == balanceCAfter);
 }
 
 /**
@@ -125,15 +117,16 @@ rule integrityMint(address a, address b, uint256 x) {
   Mint is additive, can performed either all at once or gradually
   mint(u,x); mint(u,y) ~ mint(u,x+y) at the same initial state
 */
-rule additiveMint(address a, address b, address c, uint256 x, uint256 y) {
+rule additiveMint(address a, address b, address c1, address c2, uint256 x, uint256 y) {
     env e;
     uint256 indexRay = gRNI();
     require(balanceOf(a) == balanceOf(b) && a != b);
-    uint256 balanceScenario0 = balanceOf(a);
-    mint(e,c,a,x,indexRay);
-    mint(e,c,a,y,indexRay);
+    require(balanceOf(c1) == balanceOf(c2));
+    // uint256 balanceScenario0 = balanceOf(a);
+    mint(e,c1,a,x,indexRay);
+    mint(e,c1,a,y,indexRay);
     uint256 balanceScenario1 = balanceOf(a);
-    mint(e, c, b, PLUS256(x,y) ,indexRay);
+    mint(e, c2, b, PLUS256(x,y) ,indexRay);
 
     uint256 balanceScenario2 = balanceOf(b);
     assert bounded_error_eq(balanceScenario1, balanceScenario2, 3), "mint is not additive";
@@ -144,7 +137,7 @@ rule additiveMint(address a, address b, address c, uint256 x, uint256 y) {
   while balance of returns _userState[account].balance normalized by gNRI();
   transfer is incentivizedERC20
 */
-rule integrityTransfer(address from, address to, uint256 amount) {
+rule integrityAuthorizedTransfer(address from, address to, uint256 amount) {
   env e;
   require e.msg.sender == from;
   address other; // for any address including from, to, currentContract the underlying asset balance should stay the same
@@ -155,7 +148,7 @@ rule integrityTransfer(address from, address to, uint256 amount) {
 
   require(amount <= balanceBeforeFrom); // Add this require inorder to move to CVL2
 
-  transfer(e, to, amount);
+  authorizedTransfer(e, from, to, amount);
 
   uint256 balanceAfterFrom = balanceOf(from);
   uint256 balanceAfterTo = balanceOf(to);
@@ -176,7 +169,7 @@ rule integrityTransfer(address from, address to, uint256 amount) {
   Transfer is additive, can performed either all at once or gradually
   transfer(from,to,x); transfer(from,to,y) ~ transfer(from,to,x+y) at the same initial state
 */
-rule additiveTransfer(address from1, address from2, address to1, address to2, uint256 x, uint256 y) {
+rule additiveAuthorizedTransfer(address from1, address from2, address to1, address to2, uint256 x, uint256 y) {
   env e1;
   env e2;
   uint256 indexRay = gRNI();
@@ -188,12 +181,12 @@ rule additiveTransfer(address from1, address from2, address to1, address to2, ui
 
   require e1.msg.sender == from1;
   require e2.msg.sender == from2;
-  transfer(e1, to1, x);
-  transfer(e1, to1, y);
+  authorizedTransfer(e1, from1, to1, x);
+  authorizedTransfer(e1, from1, to1, y);
   uint256 balanceFromScenario1 = balanceOf(from1);
   uint256 balanceToScenario1 = balanceOf(to1);
 
-  transfer(e2, to2, PLUS256(x,y));
+  authorizedTransfer(e2, from2, to2, PLUS256(x,y));
 
   uint256 balanceFromScenario2 = balanceOf(from2);
   uint256 balanceToScenario2 = balanceOf(to2);
@@ -306,4 +299,25 @@ rule mintNoChangeToOther(address user, uint256 amount, uint256 index, address ot
   uint256 otherBalanceAfter = balanceOf(other);
 
   assert otherBalanceBefore == otherBalanceAfter && otherDataBefore == otherDataAfter;
+}
+
+definition disallowedMethods(method f) returns bool = 
+    f.selector == sig:permit(address,address,uint256,uint256,uint8,bytes32,bytes32).selector ||
+    f.selector == sig:approve(address,uint256).selector || 
+    f.selector == sig:increaseAllowance(address,uint256).selector || 
+    f.selector == sig:decreaseAllowance(address,uint256).selector || 
+    f.selector == sig:transfer(address,uint256).selector || 
+    f.selector == sig:transferFrom(address,address,uint256).selector || 
+    f.selector == sig:transferOnLiquidation(address,address,uint256).selector || 
+    f.selector == sig:transferUnderlyingTo(address,uint256).selector ||
+    f.selector == sig:mintToTreasury(uint256, uint256).selector;
+
+rule revertOnDisallowedMethods(method f)
+  filtered { f -> f.contract == currentContract && disallowedMethods(f) }
+{
+  env e;
+  calldataarg args;
+  f@withrevert(e, args);
+
+  assert lastReverted;
 }
