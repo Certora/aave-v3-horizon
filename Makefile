@@ -43,16 +43,54 @@ git-diff :
 
 # Deploy
 deploy-libs-one	:;
-	FOUNDRY_PROFILE=${chain} forge script scripts/misc/LibraryPreCompileOne.sol --rpc-url ${chain} --ledger --mnemonic-indexes ${MNEMONIC_INDEX} --sender ${LEDGER_SENDER} --slow --broadcast
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/LibraryPreCompileOne.sol \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --broadcast --gas-estimate-multiplier 150 \
+		--verify --chain ${CHAIN}
 deploy-libs-two	:;
-	FOUNDRY_PROFILE=${chain} forge script scripts/misc/LibraryPreCompileTwo.sol --rpc-url ${chain} --ledger --mnemonic-indexes ${MNEMONIC_INDEX} --sender ${LEDGER_SENDER} --slow --broadcast
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/LibraryPreCompileTwo.sol \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --broadcast --gas-estimate-multiplier 150 \
+		--verify --chain ${CHAIN}
 
+# STEP 1: Deploy scaled price adapters. `make deploy-scaled-price-adapter source=<PRICE_FEED_ADDRESS>`
+deploy-scaled-price-adapter :;
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/DeployScaledPriceAdapter.sol:DeployScaledPriceAdapter \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --broadcast --gas-estimate-multiplier 150 \
+		--verify --chain ${CHAIN} --verifier-url ${VERIFIER_URL} \
+		--sig "run(address)" ${source}
+
+# STEP 2: Deploy Libraries
 deploy-libs :
-	make deploy-libs-one chain=${chain}
-	npx catapulta-verify -b broadcast/LibraryPreCompileOne.sol/${chainId}/run-latest.json
-	make deploy-libs-two chain=${chain}
-	npx catapulta-verify -b broadcast/LibraryPreCompileTwo.sol/${chainId}/run-latest.json
+	make deploy-libs-one
+	make deploy-libs-two
 
+# STEP 3: Deploy Pool Contracts once libraries are deployed and updated on .env
+deploy-v3-batched-broadcast :; 
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/DeployAaveV3MarketBatched.sol:Default \
+		--rpc-url ${CHAIN} --sender $$(cast wallet address --account ${ACCOUNT}) --account ${ACCOUNT} --slow --broadcast --gas-estimate-multiplier 150 \
+		--verify --chain ${CHAIN} --verifier-url ${VERIFIER_URL} -vvvv
+
+# STEP 4: Deploys payload to list phase one assets. `make deploy-phase-one-payload reportPath=<PATH_TO_REPORT>`
+deploy-phase-one-payload :;
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/DeployHorizonPhaseOnePayload.sol:DeployHorizonPhaseOnePayload \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --broadcast --gas-estimate-multiplier 150 \
+		--verify --chain ${CHAIN} --verifier-url ${VERIFIER_URL} \
+		--sig "run(string)" ${reportPath}
+
+# STEP 5: Deploys payload to update phase one assets. `make deploy-phase-one-update-payload`
+deploy-phase-one-update-payload :;
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/DeployHorizonPhaseOneUpdatePayload.sol:DeployHorizonPhaseOneUpdatePayload \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --gas-estimate-multiplier 150 \
+		--chain ${CHAIN} --verifier etherscan \
+		--sig "run()" \
+		--verify --broadcast
+
+# Deploy liquidation data provider. `make deploy-liquidation-data-provider` CHAIN=mainnet ACCOUNT=account
+deploy-liquidation-data-provider :;
+	FOUNDRY_PROFILE=${CHAIN} forge script scripts/misc/DeployLiquidationDataProvider.sol:DeployLiquidationDataProvider \
+		--rpc-url ${CHAIN} --account ${ACCOUNT} --slow --gas-estimate-multiplier 150 \
+		--chain ${CHAIN} --verifier etherscan \
+		--sig "run()" \
+		--verify --broadcast
 
 # Invariants
 echidna:
